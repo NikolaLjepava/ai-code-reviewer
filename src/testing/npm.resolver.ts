@@ -24,6 +24,10 @@ export function resolveNpmCliPath(): string {
 
   const resolvedPath = fs.realpathSync(npmPath);
 
+  if (path.basename(resolvedPath) === "npm-cli.js") {
+    return resolvedPath;
+  }
+
   const npmDirectory = path.dirname(resolvedPath);
 
   const candidates = isWindows

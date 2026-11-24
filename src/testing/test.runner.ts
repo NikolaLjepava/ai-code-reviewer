@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { resolveNpmCliPath } from "./npm.resolver.js";
+import { terminateProcessTree } from "./process.terminator.js";
 
 import type {
   TestRunOptions,
@@ -30,6 +31,7 @@ export function runTests(options: TestRunOptions): Promise<TestRunResult> {
     let stderrBytes = 0;
     let timedOut = false;
     let settled = false;
+    let terminationPromise: Promise<void> | undefined;
 
     // npm.cmd is required for Windows when shell execution is disabled.
     const npmCliPath = resolveNpmCliPath();
@@ -39,6 +41,7 @@ export function runTests(options: TestRunOptions): Promise<TestRunResult> {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
 
     const appendOutput = (
@@ -69,7 +72,30 @@ export function runTests(options: TestRunOptions): Promise<TestRunResult> {
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill();
+
+      if (child.pid === undefined) {
+        return;
+      }
+
+      terminationPromise = terminateProcessTree(child.pid).catch(
+        (error: unknown) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+
+          child.kill();
+          child.stdout.destroy();
+          child.stderr.destroy();
+
+          reject(
+            new Error("Failed to terminate test process tree", {
+              cause: error,
+            }),
+          );
+        },
+      );
     }, timeoutMs);
 
     child.on("error", (error) => {
@@ -81,8 +107,12 @@ export function runTests(options: TestRunOptions): Promise<TestRunResult> {
       }
     });
 
-    child.on("close", (exitCode) => {
+    child.on("close", async (exitCode) => {
       clearTimeout(timeout);
+
+      if (terminationPromise) {
+        await terminationPromise;
+      }
 
       if (settled) {
         return;
